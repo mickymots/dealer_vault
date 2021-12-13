@@ -104,7 +104,7 @@ def main():
     print(jwt_token)
 
     if  jwt_token:
-        print('Token is valid')
+        
         feed = initiate_delivery(jwt_token)
         status = feed['status']
 
@@ -124,7 +124,7 @@ def main():
         # GET the dataset
         dataset = get_dataset(jwt_token, feed['requestId'])       
 
-        print(f'dataset length = {len(dataset)}')
+        # print(f'dataset length = {len(dataset)}')
     else:
         print('Token is invalid')
 
