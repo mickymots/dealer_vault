@@ -23,22 +23,26 @@ SECRET_KEY = os.getenv('AWS_SECRET_KEY')
 s3 = boto3.resource('s3', aws_access_key_id=ACCESS_KEY,
     aws_secret_access_key=SECRET_KEY, region_name='ca-central-1')
 
-feed_queue = boto3.client('sqs',aws_access_key_id=ACCESS_KEY,
+sqs = boto3.client('sqs',aws_access_key_id=ACCESS_KEY,
     aws_secret_access_key=SECRET_KEY, region_name='ca-central-1')
+
+
 
 
 def load_feed_date():
     feed_history = []
-    obj = s3.Object("apskraken", 'feed_date.json')
-    file_data = obj.get()['Body'].read()
-    
-    for line in file_data.splitlines():
-        data = line.decode('utf-8')  
-        data = json.loads(data)
-        logger.info(f"data = {data}")
+    bucket_name = os.getenv('BUCKET_NAME')
+    obj = s3.Object(bucket_name, 'feed_date.json')
+    logger.info(f"bucket_name = {bucket_name}")
+    try:
+        file_data = obj.get()['Body'].read()
+        feed_history = json.loads(file_data)
+        
+        logger.debug(f"feed_history = {feed_history}")
 
-        feed_history.append(data)
-    
+    except ClientError as e:
+        logger.error(f"ClientError = {e}")
+
     return feed_history
 
 
@@ -59,6 +63,7 @@ def get_token():
         return response.json()['token']
     else:
         return None
+   
 
 
 def initiate_delivery(payload, catchup_start_date):
@@ -76,9 +81,11 @@ def initiate_delivery(payload, catchup_start_date):
     api_key = os.getenv('API_KEY')
     api_url = os.getenv('API_URL')
     vendor_id = os.getenv('VENDOR_PROGRAM_ID')
+
+    payload = json.loads(payload)
     roof_top_id = payload['dvdId']
     file_type_code = payload['fileTypeCode']
-    catchup_end_date = payload['catchupEndDate'].split('T')[0]
+    catchup_end_date = payload['lastPollDate'].split('T')[0]
     headers = {'Cache-Control': 'no-cache',
                'Ocp-Apim-Subscription-Key': f'{api_key}', 'X-Jwt-Token': f'{token}'}
     response = requests.post(f'{api_url}/delivery', headers=headers,
@@ -90,7 +97,7 @@ def initiate_delivery(payload, catchup_start_date):
                                                }
                                    })
 
-    logger.info(f"requestId = {response.json()['requestId']}")
+    logger.info(f"requestId = {response.json()}")
 
     return response.json()
 
@@ -115,8 +122,7 @@ def get_catchup_start_date():
     '''
     catchup_start_date = datetime.now()-timedelta(days=30)
     catchup_start_date = catchup_start_date.strftime('%Y-%m-%d')
-    logger.info(f"catchup_start_date = {catchup_start_date}")
-
+   
     return catchup_start_date
 
 
@@ -128,6 +134,7 @@ def lambda_handler(event, context):
     '''
     logger.info("Lambda function started")
 
+    logger.info(f"event = {event}")
     
     feed_history = load_feed_date()
 
@@ -146,11 +153,13 @@ def lambda_handler(event, context):
             catchup_start_date = filterd_history[0]['lastPollDate'].split('T')[0]
         
         logger.info(f"catchup_start_date = {catchup_start_date}")
-        initiate_delivery(payload, catchup_start_date)
+        response = initiate_delivery(payload, catchup_start_date)
+        sqs.send_message(QueueUrl=os.getenv('REQUEST_QUEUE_URL'), MessageBody=json.dumps(response))
 
 
 if __name__ == "__main__":
     logger.info('main')
+    load_dotenv()
     event = {'Records': [
         {'body': '{"lastPollDate": "2021-12-11T23:24:40", "dealerClientId": "DVD43550", "dvdId": "DVD43550", "fileTypeCode": "SV"}'}]}
 
