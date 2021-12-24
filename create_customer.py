@@ -13,8 +13,6 @@ import os
 from dotenv import load_dotenv
 from datetime import time, datetime, timedelta
 import time as t
-import csv
-import pandas as pd
 
 
 logger = logging.getLogger()
@@ -85,16 +83,16 @@ def get_business_id(vendor, file_type):
     business_info = list(filter(lambda x: x['name'].lower().find(
         vendor.lower()) > -1, agency_client['clients']))
 
-    logger.debug(f'business_info = {business_info}')
+    logger.info(f'business_info = {business_info}')
 
     # list businesses of the client
     business_list = get_client_business_list(business_info[0]['id'])
 
-    logger.debug(f'business_list = {business_list}')
+    logger.info(f'business_list = {business_list}')
     business_id = ''
 
     if len(business_list['data']) == 1:
-        business_id = business_list['data']['businessId']
+        business_id = business_list['data'][0]['businessId']
     else:
         filtered_business = list(filter(lambda x: x['businessName'].lower().find(
             file_type.lower()) > -1, business_list['data']))
@@ -139,27 +137,73 @@ def create_customer(customer, business_id):
     return customer, response.json()
 
 
-def process_file(file_name):
+def clean_records(json_data):
 
-    service_data = pd.read_json(f'/tmp/{file_name}', encoding='utf-8')
+    dict_filter = lambda x, y: dict([ (i,x[i]) for i in x if i in set(y) ])
 
-    if 'Email 1' in service_data:
-        service_data.rename(columns={"Email 1": "Email"}, inplace=True)
+    records = []
 
-    if "Salesman 1 Name" in service_data:
-        service_data.rename(columns={"Salesman 1 Name": "Tag"}, inplace=True)
+    # Iterating through the json file
+    for record in json_data:
 
-    service_data["Job ID"] = service_data["Year"].astype(
-        str) + " " + service_data["Make"] + " " + service_data['Model']
+        if record.get('Email'):
+            logger.debug(f'Email = {record["Email"]}')
+        elif record.get('Email 1'):
+            logger.info(f"record = {record}")
+            record['Email'] = record.pop('Email 1')
+        elif record.get('Email 2'):
+            record['Email'] = record.pop('Email 2')
+        elif record.get('Email 3'):
+            record['Email'] = record.pop('Email 3')
+        
+        else:
+            record['Email'] = ''
 
-    selected_data = service_data[['First Name', 'Last Name', 'Email',
-                                  'Year', 'Make', 'Model', 'Tag', 'Job ID']]
 
-    parsed_data = json.loads(selected_data.to_json(orient='records'))
+        if record.get('Salesman 1 Name'):
+            logger.debug(f"record = {record}")
+            record['Tag'] = record.pop('Salesman 1 Name')
+        elif record.get('Salesman Name'):
+            logger.debug(f"record = {record}")
+            record['Tag'] = record.pop('Salesman Name')
+        elif record.get('Salesman'):
+            logger.debug(f"record = {record}")
+            record['Tag'] = record.pop('Salesman')
+        elif record.get('Salesman 2 Name'):
+            logger.debug(f"record = {record}")
+            record['Tag'] = record.pop('Salesman 2 Name')
+        elif record.get('Salesman Manager Name'):
+            logger.debug(f"record = {record}")
+            record['Tag'] = record.pop('Salesman Manager Name')
+        else:
+            record['Tag'] = ''
+
+
+        record['Job ID'] =    record["Year"] + " " + record["Make"] + " " + record['Model']
+
+        selected_dict_keys = ['Vendor Dealer ID', 'File Type', 'First Name', 'Last Name', 'Email', 'Year', 'Make', 'Model', 'Tag', 'Job ID']
+    
+        #lambda function to filter the dictionary
+        
+
+        parsed_data=dict_filter(record, selected_dict_keys)
+        records.append(parsed_data)
+        logger.debug(parsed_data)
+
+    return records
+
+
+def process_file(json_data):
+
+    # logger.info(f"file_name = {file_name}")
+    logger.info(f"processing file")
+
+    # clean records
+    parsed_data = clean_records(json_data)
 
     # select vendor name for identification
     business_id = get_business_id(
-        service_data['Vendor Dealer ID'].values[0], service_data['File Type'].values[0])
+        parsed_data[0]['Vendor Dealer ID'], parsed_data[0]['File Type'])
 
     logger.info(f'business_id = {business_id}')
 
@@ -173,6 +217,46 @@ def process_file(file_name):
     return create_request
 
 
+
+# def process_file(file_name):
+
+#     service_data = pd.read_json(f'/tmp/{file_name}', encoding='utf-8')
+
+#     if 'Email 1' in service_data:
+#         service_data.rename(columns={"Email 1": "Email"}, inplace=True)
+
+#     if "Salesman 1 Name" in service_data:
+#         service_data.rename(columns={"Salesman 1 Name": "Tag"}, inplace=True)
+
+#     service_data["Job ID"] = service_data["Year"].astype(
+#         str) + " " + service_data["Make"] + " " + service_data['Model']
+
+#     selected_data = service_data[['First Name', 'Last Name', 'Email',
+#                                   'Year', 'Make', 'Model', 'Tag', 'Job ID']]
+
+#     parsed_data = json.loads(selected_data.to_json(orient='records'))
+
+#     # select vendor name for identification
+#     business_id = get_business_id(
+#         service_data['Vendor Dealer ID'].values[0], service_data['File Type'].values[0])
+
+#     logger.info(f'business_id = {business_id}')
+
+#     # for item in parsed_data:
+#     #     # pass
+#     #     create_customer(item)
+
+#     create_request = list(
+#         map(lambda x:  create_customer(x, business_id), parsed_data))
+
+#     return create_request
+
+def archive_file(bucket_name, file_name):
+    logger.info(f'file_name = {file_name}')
+    s3.Object(bucket_name,f'archive/{file_name}.bkp').copy_from(CopySource=f'{bucket_name}/{file_name}')
+    s3.Object(bucket_name,file_name).delete()
+
+
 def download_file(s3_bucket, s3_key):
     '''
     This function will download the s3 file on tmp location.
@@ -180,8 +264,14 @@ def download_file(s3_bucket, s3_key):
     logger.info(f"bucket_name = {s3_bucket}")
     logger.info(f"file_name = {s3_key}")
 
-    bucket = s3.Bucket(s3_bucket)
-    bucket.download_file(s3_key, '/tmp/' + s3_key)
+    # bucket = s3.Bucket(s3_bucket)
+    # bucket.download_file(s3_key, '/tmp/' + s3_key)
+
+
+    content_object = s3.Object(s3_bucket, s3_key)
+    file_content = content_object.get()['Body'].read().decode('utf-8')
+    json_content = json.loads(file_content)
+    return json_content
 
 
 def lambda_handler(event, context):
@@ -205,9 +295,12 @@ def lambda_handler(event, context):
             logger.info(f"s3_bucket = {s3_bucket}")
             logger.info(f"s3_key = {s3_key}")
 
-            download_file(s3_bucket, s3_key)
-            response = process_file(s3_key)
+            json_data = download_file(s3_bucket, s3_key)
+            response = process_file(json_data)
             logger.info(f"response = {response}")
+
+            response = archive_file(s3_bucket, s3_key)
+            logger.info(f"file archiveed")
 
     except Exception as e:
         logger.error(f"Error: {e}")
